@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -6,7 +7,7 @@ namespace DKSBE
 {
 	public static class Utils
 	{
-		public static string? ToHex(this object obj, bool add_0x = true)
+		public static string? ToHex(this object? obj, bool add_0x = true)
 		{
 			if (obj is null)
 			{
@@ -68,9 +69,13 @@ namespace DKSBE
 			{
 				return PrimitiveString(o);
 			}
-			else if (type.IsArray || type.Name.Contains("List`") || type.Name.Contains("Dictionary`"))
+			else if (type.IsArray || type.Name.Contains("List") || type.Name.Contains("Dictionary"))
 			{
 				return ArrayString(o, ref indent);
+			}
+			else if (o is data.StringPtr ptr)
+			{
+				return ptr.ToString();
 			}
 			else if ((type.IsClass && !type.IsAbstract) || (type.IsValueType && !type.IsEnum))
 			{
@@ -82,7 +87,7 @@ namespace DKSBE
 			}
 		}
 
-		private static string? StructString(object o, ref int indentation)
+		private static unsafe string? StructString(object o, ref int indentation)
 		{
 			string indent = BuildIndent(indentation);
 			string ret = $"{o.GetType().Name}\n{indent}{{\n";
@@ -90,15 +95,54 @@ namespace DKSBE
 			indent = BuildIndent(indentation);
 			Type type = o.GetType();
 			TypedReference tref = __makeref(o);
-			FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
+			List<string> list = new();
+			FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
 			for (int i = 0; i < fields.Length; i++)
 			{
-				ret += $"{indent}{fields[i].Name} = {HandleArrayString(fields[i].GetValueDirect(tref), ref indentation)}";
-				if (i != fields.Length - 1)
-				{
-					ret += $",\n";
-				}
+				list.Add($"{indent}{fields[i].Name} = {HandleArrayString(fields[i].GetValueDirect(tref), ref indentation)}");
 			}
+			PropertyInfo[] props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+			object? value;
+			for (int i = 0; i < props.Length; i++)
+			{
+				if (props[i].Name == "Item")
+				{
+					continue;
+				}
+				MethodInfo? get = props[i].GetGetMethod();
+				ParameterInfo?[]? parameters = get?.GetParameters();
+				value = props[i];
+				if ((parameters?.Length).GetValueOrDefault() == 0)
+				{
+					Type underlying_type = props[i].PropertyType.GetElementType() ?? props[i].PropertyType;
+					value = get?.Invoke(o, null);
+					if (value is Pointer pointer)
+					{
+						void* ptr = Pointer.Unbox(value);
+						value = underlying_type.Name switch
+						{
+							"Char" => MarshalHelper.ReadString((char*)ptr),
+							"Byte" => *(byte*)ptr,
+							"SByte" => *(sbyte*)ptr,
+							"UInt16" => *(ushort*)ptr,
+							"Int16" => *(short*)ptr,
+							"UInt32" => *(uint*)ptr,
+							"Int32" => *(int*)ptr,
+							"UInt64" => *(ulong*)ptr,
+							"Int64" => *(long*)ptr,
+							"Single" => *(float*)ptr,
+							"Double" => *(double*)ptr,
+							_ => Marshal.PtrToStructure((IntPtr)ptr, underlying_type)
+						};
+					}
+					else if (value is data.StringPtr ptr)
+					{
+						value = ptr.ToString();
+					}
+				}
+				list.Add($"{indent}{props[i].Name} => {HandleArrayString(value, ref indentation)}");
+			}
+			ret += string.Join(",\n", list);
 			indentation--;
 			indent = BuildIndent(indentation);
 			ret += $"\n{indent}}}";
@@ -116,6 +160,23 @@ namespace DKSBE
 			}
 			switch (o.GetType().Name)
 			{
+				case "List_Ptr`1":
+					{
+						dynamic list = o;
+						Type[] generics = o.GetType().GetGenericArguments();
+						ret += $"<{generics[0].Name}>[{list.count}]\n{indent}{{\n";
+						indentation++;
+						indent = BuildIndent(indentation);
+						for (int i = 0; i < list.count; i++)
+						{
+							ret += $"{indent}{HandleArrayString(list[i], ref indentation)}";
+							if (i != list.count - 1)
+							{
+								ret += $",\n";
+							}
+						}
+						break;
+					}
 				case "List`1":
 					{
 						dynamic list = o;
@@ -183,7 +244,7 @@ namespace DKSBE
 				double val => $"{val}d",
 				char val => $"\'{(val == 0 ? "\\0" : val)}\'",
 				string val => $"\"{val.Replace("\0", "*")}\"",
-				_ => o.ToString(),
+				_ => o.ToHex(),
 			};
 		}
 
@@ -197,35 +258,133 @@ namespace DKSBE
 			return ret;
 		}
 
-		public static bool EnumToType<T>(in T value, out Type? o) where T : struct
+		public static unsafe long SizeOf(params object[] objs)
 		{
-			// store the name of the value
-			string name = $"{value}";
-			string real_name = "";
-			string[] sections = name.Split('_');
-			for (int i = 0; i < sections.Length; i++)
+			long ret = 0;
+			foreach (object obj in objs)
 			{
-				if (sections[i].Length == 0)
+				ret += obj.SizeOf();
+			}
+			return ret;
+		}
+
+		public static unsafe long SizeOf(this object? obj)
+		{
+			if (obj == null)
+			{
+				return 0;
+			}
+			Type type = obj.GetType();
+			if (type.IsPrimitive)
+			{
+				return PrimitiveSize(type);
+			}
+			else if (type.IsArray)
+			{
+				return ArraySize(obj);
+			}
+			else if (obj is Pointer pointer)
+			{
+				Type underlying_type = type.GetElementType() ?? type;
+				long size = 0;
+				switch (underlying_type.Name)
 				{
-					real_name += "_";
+					case "Char":
+						MarshalHelper.ReadValueTerminatedArray<byte>((byte*)Pointer.Unbox(pointer), ref size, 0);
+						break;
+					default: size = PrimitiveSize(underlying_type); break;
+				};
+				return size;
+			}
+			else if (obj is data.StringPtr ptr)
+			{
+				return ptr.length;
+			}
+			else if (type.IsClass && !type.IsAbstract)
+			{
+				return StructSize(obj);
+			}
+			else
+			{
+				return Marshal.SizeOf(obj);
+			}
+		}
+
+		private static long ArraySize(object obj)
+		{
+			Array array = (Array)obj;
+			long size = 0;
+			for (int i = 0; i < array.Length; i++)
+			{
+				size += SizeOf(array.GetValue(i));
+			}
+			return size;
+		}
+
+		private static unsafe long StructSize(object obj)
+		{
+			Type type = obj.GetType();
+			TypedReference tref = __makeref(obj);
+			FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+			PropertyInfo[] props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+			long size = 0;
+			foreach (FieldInfo field in fields)
+			{
+				size += SizeOf(field.GetValueDirect(tref));
+			}
+			foreach (PropertyInfo prop in props)
+			{
+				if (prop.PropertyType == typeof(data.StringPtr))
+				{
+					size += ((data.StringPtr)(prop.GetValue(obj) ?? 0)).length;
 					continue;
 				}
-				else if (byte.TryParse(sections[i], NumberStyles.HexNumber, null, out _))
+				MethodInfo? method = prop.GetGetMethod();
+				if (method == null)
 				{
-					real_name += sections[i];
+					continue;
+				}
+				object? value = method.Invoke(obj, null);
+				if (value is Pointer pointer)
+				{
+					Type underlying_type = prop.PropertyType.GetElementType() ?? prop.PropertyType;
+					long _size = 0;
+					switch (underlying_type.Name)
+					{
+						case "Char":
+							MarshalHelper.ReadValueTerminatedArray<byte>((byte*)Pointer.Unbox(pointer), ref _size, 0);
+							break;
+						default: _size = PrimitiveSize(underlying_type); break;
+					};
+					size += _size;
 				}
 				else
 				{
-					real_name += $"{char.ToUpperInvariant(sections[i][0])}{sections[i][1..].ToLowerInvariant()}";
-				}
-
-				if (i + 1 < sections.Length)
-				{
-					real_name += "_";
+					size += SizeOf(value);
 				}
 			}
-			o = Assembly.GetExecutingAssembly().GetTypes().FirstOrDefault(a => a.IsClass && !a.IsAbstract && a.Name == real_name);
-			return o != null;
+			return size;
+		}
+
+		private static long PrimitiveSize(Type type) => type.Name switch
+			{
+				"Char" => sizeof(char),
+				"Byte" => sizeof(byte),
+				"SByte" => sizeof(sbyte),
+				"UInt16" => sizeof(ushort),
+				"Int16" => sizeof(short),
+				"UInt32" => sizeof(uint),
+				"Int32" => sizeof(int),
+				"UInt64" => sizeof(ulong),
+				"Int64" => sizeof(long),
+				"Single" => sizeof(float),
+				"Double" => sizeof(double),
+				_ => 0
+			};
+
+		public static int Align(this int value, int alignment = sizeof(int))
+		{
+			return value + (alignment - (value % alignment));
 		}
 	}
 }

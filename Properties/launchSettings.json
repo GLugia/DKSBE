@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DKSBE": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}

@@ -1,8 +1,22 @@
-﻿namespace DKSBE.data
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+using static DKSBE.MarshalHelper;
+
+namespace DKSBE.data
 {
-	public class PtrData
+	public unsafe struct PtrData
 	{
-		public object? value;
-		public long size;
+		public readonly byte* origin;
+		public readonly long length;
+
+		public PtrData(byte* origin, long length)
+		{
+			this.origin = origin;
+			this.length = length;
+		}
 	}
 }
