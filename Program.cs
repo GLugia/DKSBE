@@ -45,6 +45,7 @@ namespace DKSBE
 			Marshal.Copy(data, 0, ptr, data.Length);
 			Unk_78_Data new_instance = PtrController.CreateInstance<Unk_78_Data>((byte*)ptr, 0);
 			first_instance.array.Add(new_instance);
+			first_instance.array.Remove(0);
 			sb.Write();
 			sb.Close();
 		}

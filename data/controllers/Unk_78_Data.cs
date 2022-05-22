@@ -15,6 +15,7 @@ namespace DKSBE.data.controllers
 		{
 			get
 			{
+				Logger.Debug($"Offset: {((int)(this.origin - this.file_origin)).ToHex()}");
 				byte[] ret = Array.Empty<byte>();
 				for (int i = 0; Marshal.ReadByte((IntPtr)this.origin, i) != 0; i++)
 				{

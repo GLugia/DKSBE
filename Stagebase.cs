@@ -241,7 +241,7 @@ namespace DKSBE
 							IntPtr file_pointer = Marshal.ReAllocHGlobal((IntPtr)this.stagebase_files[i].origin, (IntPtr)(this.stagebase_files[i].length + difference));
 							this.stagebase_files[i] = new((byte*)file_pointer.ToPointer());
 							target += this.stagebase_files[i].origin - old_ptr;
-							for (byte* offset = this.stagebase_files[i].origin + this.stagebase_files[i].length - 1; offset > target + target_length; offset--)
+							for (byte* offset = this.stagebase_files[i].origin + this.stagebase_files[i].length - 1; offset >= target + target_length; offset--)
 							{
 								Marshal.WriteByte((IntPtr)(offset + difference), *offset);
 							}
@@ -296,32 +296,6 @@ namespace DKSBE
 		}
 
 		#endregion
-
-		public void ModifyAllPointers(byte* file_origin, long offset, int amount)
-		{
-			if (this._objects.Count <= 0)
-			{
-				return;
-			}
-			PtrController controller;
-			for (int handle = 0x00; handle < 0xFF; handle++)
-			{
-				if (!this._objects.ContainsKey(handle) || this._objects[handle].Count == 0)
-				{
-					continue;
-				}
-				for (int instance = 0; instance < this._objects[handle].Count; instance++)
-				{
-					controller = this._objects[handle][instance];
-					if (controller != null && controller >= file_origin + offset)
-					{
-						controller.UnlockOffsets(this.ptr_data);
-						controller.ModifyPointers(offset, amount);
-						controller.LockOffsets(this.ptr_data);
-					}
-				}
-			}
-		}
 
 		internal void Write()
 		{

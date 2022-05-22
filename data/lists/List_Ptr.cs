@@ -30,7 +30,6 @@ namespace DKSBE.data.lists
 			}
 		}
 		public override long size => this.pre_pad_size + (sizeof(int) - (this.pre_pad_size % sizeof(int)));
-		private long old_size;
 
 		public KeyValuePair<int, T> this[int index]
 		{
@@ -65,15 +64,21 @@ namespace DKSBE.data.lists
 		public void Add(T controller)
 		{
 			// store the old size for later use in this.Write()
-			this.old_size = this.size;
-			Stagebase.instance.ModifyAllPointers(this.file_origin, (this.origin - this.file_origin) + (this.count * sizeof(int)), sizeof(int));
 			int offset = this.count > 0 ? (int)(this.pointers[^1] + this.controllers[^1].size) : (int)(this.origin - this.file_origin + sizeof(int));
+			Stagebase.instance.Write((byte*)((int*)this.origin + this.count), 0, BitConverter.GetBytes(offset));
 			Array.Resize(ref this.pointers, this.count + 1);
 			this.pointers[^1] = offset;
+			byte[] data = new byte[controller.size];
+			for (int i = 0; i < data.Length; i++)
+			{
+				data[i] = *(controller.origin + i);
+			}
+			Stagebase.instance.Write(this.file_origin + offset, 0, data);
+			controller.file_origin = this.file_origin;
+			controller.origin = this.file_origin + offset;
 			Array.Resize(ref this.controllers, this.count + 1);
 			this.controllers[^1] = controller;
 			this.count++;
-			this.Write();
 		}
 
 		public bool Remove(int index)
@@ -83,11 +88,8 @@ namespace DKSBE.data.lists
 			{
 				return false;
 			}
-			this.old_size = this.size;
-			int[] temp_pointers = this.pointers;
-			this.pointers = new int[this.count - 1];
-			T[] temp_controllers = this.controllers;
-			this.controllers = new T[this.count - 1];
+			int[] pointers = new int[this.count - 1];
+			T[] controllers = new T[this.count - 1];
 			int j = 0;
 			for (int i = 0; i < this.count; i++)
 			{
@@ -95,35 +97,16 @@ namespace DKSBE.data.lists
 				{
 					continue;
 				}
-				this.pointers[j] = temp_pointers[i];
-				this.controllers[j++] = temp_controllers[i];
+				pointers[j] = this.pointers[i];
+				controllers[j] = this.controllers[i];
+				j++;
 			}
+			this.pointers = pointers;
+			this.controllers = controllers;
 			this.count--;
-			this.Write();
+			Stagebase.instance.Write((byte*)((int*)this.origin + index), 4, Array.Empty<byte>());
+			Stagebase.instance.Write(controllers[index].origin, controllers[index].size, Array.Empty<byte>());
 			return true;
-		}
-
-		private void Write()
-		{
-			byte[] data = new byte[this.size];
-			int offset = 0;
-			for (int i = 0; i < this.count; i++)
-			{
-				BitConverter.GetBytes(this.pointers[i]).CopyTo(data, offset);
-				offset += sizeof(int);
-			}
-			offset += sizeof(int);
-			for (int i = 0; i < this.count; i++)
-			{
-				for (int j = 0; j < this.controllers[i].size; j++)
-				{
-					data[offset++] = *(this.controllers[i].origin + j);
-				}
-			}
-			offset++;
-			offset += sizeof(int) - (offset % sizeof(int));
-			Stagebase.instance.Write(this.origin, this.old_size, data);
-			this.old_size = this.size;
 		}
 
 		public override void ModifyOrigin(long alloc_difference, byte* target, long size_difference)
@@ -131,11 +114,8 @@ namespace DKSBE.data.lists
 			base.ModifyOrigin(alloc_difference, target, size_difference);
 			for (int i = 0; i < this.count; i++)
 			{
-				long old = this.controllers[i] - this.controllers[i].file_origin;
 				this.controllers[i].ModifyOrigin(alloc_difference, target, size_difference);
-				Logger.Debug($"{((int)old).ToHex()} -> {((int)(this.controllers[i] - this.controllers[i].file_origin)).ToHex()}");
 			}
-			Logger.Debug("\n");
 		}
 
 		public override void ModifyPointers(long target, int difference)
@@ -144,15 +124,11 @@ namespace DKSBE.data.lists
 			{
 				if (this.pointers[i] >= target)
 				{
-					int old = *((int*)this.origin + i);
 					this.pointers[i] += difference;
-					MarshalHelper.Write((int*)this.origin + i, this.pointers[i]);
-					Logger.Debug($"{old.ToHex()} -> {(*((int*)this.origin + i)).ToHex()}");
+					Write((int*)this.origin + i, this.pointers[i]);
 				}
 				this.controllers[i].ModifyPointers(target, difference);
 			}
-			Logger.Debug("\n");
-			;
 		}
 	}
 }
